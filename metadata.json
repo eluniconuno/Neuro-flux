@@ -1,0 +1,10 @@
+{
+  "name": "Neuro-Auditory Flux",
+  "description": "Futuristic 3D audio visualizer with reactive particle topologies, real-time frequency analysis, and high-quality video recording in Desktop (16:9) and Mobile (9:16) formats.",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
