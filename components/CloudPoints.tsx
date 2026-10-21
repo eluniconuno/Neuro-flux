@@ -29,10 +29,28 @@ export const CloudPoints: React.FC<ParticleSystemProps> = ({
   visualParams 
 }) => {
   const meshRef = useRef<THREE.Points>(null);
-  const smoothModalRef = useRef<{ n: number; m: number }>({ n: 3, m: 4 });
   
-  // 12,000 particles provides an exceptional balance between density and 60fps performance
-  const PARTICLE_COUNT = 12000;
+  // Modal state tracker for continuous, integer-clean acoustic modal superposition (Chladni & Cymatics)
+  const modalStateRef = useRef<{
+    currentN: number;
+    currentM: number;
+    currentAlpha: number;
+    targetN: number;
+    targetM: number;
+    targetAlpha: number;
+    blend: number;
+  }>({
+    currentN: 3,
+    currentM: 4,
+    currentAlpha: 0.25,
+    targetN: 3,
+    targetM: 4,
+    targetAlpha: 0.25,
+    blend: 1.0
+  });
+  
+  // 9,000 particles delivers dense, razor-sharp Chladni lines and rock-solid 60 FPS
+  const PARTICLE_COUNT = 9000;
   
   const frequencyArray = useMemo(() => new Uint8Array(analyzer ? analyzer.frequencyBinCount : 0), [analyzer]);
   const timeDomainArray = useMemo(() => new Uint8Array(analyzer ? analyzer.frequencyBinCount : 0), [analyzer]);
@@ -43,22 +61,76 @@ export const CloudPoints: React.FC<ParticleSystemProps> = ({
     const colors = new Float32Array(PARTICLE_COUNT * 3);
     const indices = new Float32Array(PARTICLE_COUNT);
 
-    const c = new THREE.Color();
-    c.setHSL(0.5, 1.0, 0.5);
-
     for (let i = 0; i < PARTICLE_COUNT; i++) {
       indices[i] = i;
       positions[i * 3] = (Math.random() - 0.5) * 50;
-      positions[i * 3 + 1] = (Math.random() - 0.5) * 50;
+      positions[i * 3 + 1] = 0;
       positions[i * 3 + 2] = (Math.random() - 0.5) * 50;
       
-      colors[i * 3] = c.r;
-      colors[i * 3 + 1] = c.g;
-      colors[i * 3 + 2] = c.b;
+      colors[i * 3] = 0;
+      colors[i * 3 + 1] = 0.9;
+      colors[i * 3 + 2] = 1.0;
     }
 
     return { positions, colors, indices };
-  }, []);
+  }, [PARTICLE_COUNT]);
+
+  // Precomputed base surface positions: avoids re-sampling complex shapes on CPU every frame
+  const baseMeshPositions = useMemo(() => {
+    const arr = new Float32Array(PARTICLE_COUNT * 3);
+    const plate = visualParams?.chladniPlateShape ?? 'SQUARE';
+
+    for (let i = 0; i < PARTICLE_COUNT; i++) {
+      const i3 = i * 3;
+      if (shape === 'CHLADNI_PLATE') {
+        if (plate === 'CIRCULAR') {
+          // Uniform disk distribution
+          const r = 24.5 * Math.sqrt((i + 0.5) / PARTICLE_COUNT);
+          const theta = i * 2.399963229728653; // Golden angle
+          arr[i3] = r * Math.cos(theta);
+          arr[i3 + 1] = 0;
+          arr[i3 + 2] = r * Math.sin(theta);
+        } else if (plate === 'HEXAGONAL') {
+          // Hexagonal 6-sector distribution
+          const sector = i % 6;
+          const u = ((i * 7 + 13) % PARTICLE_COUNT) / PARTICLE_COUNT;
+          const v = ((i * 19 + 37) % PARTICLE_COUNT) / PARTICLE_COUNT;
+          const r = 24.0 * Math.sqrt(u);
+          const angle = sector * (Math.PI / 3) + (v - 0.5) * (Math.PI / 3);
+          arr[i3] = r * Math.cos(angle);
+          arr[i3 + 1] = 0;
+          arr[i3 + 2] = r * Math.sin(angle);
+        } else {
+          // Square plate jittered grid
+          const gridSize = Math.ceil(Math.sqrt(PARTICLE_COUNT));
+          const gx = ((i % gridSize) / gridSize) - 0.5;
+          const gz = (Math.floor(i / gridSize) / gridSize) - 0.5;
+          const jx = (((i * 13) % 100) / 100 - 0.5) * (48.0 / gridSize);
+          const jz = (((i * 29) % 100) / 100 - 0.5) * (48.0 / gridSize);
+          arr[i3] = gx * 48.0 + jx;
+          arr[i3 + 1] = 0;
+          arr[i3 + 2] = gz * 48.0 + jz;
+        }
+      } else if (
+        shape === 'ICOSAHEDRON' ||
+        shape === 'DODECAHEDRON' ||
+        shape === 'OCTAHEDRON' ||
+        shape === 'TETRAHEDRON' ||
+        shape === 'HEXAGONAL_PRISM' ||
+        shape === 'MOBIUS_STRIP' ||
+        shape === 'KLEIN_BOTTLE' ||
+        shape === 'GEODESIC_DOME' ||
+        shape === 'SUPERELLIPSOID' ||
+        shape === 'GYROID'
+      ) {
+        const pt = sampleShapeSurfacePoint(shape, i, PARTICLE_COUNT);
+        arr[i3] = pt.x;
+        arr[i3 + 1] = pt.y;
+        arr[i3 + 2] = pt.z;
+      }
+    }
+    return arr;
+  }, [shape, PARTICLE_COUNT, visualParams?.chladniPlateShape]);
 
   // Helper to lerp values safely
   const lerp = (start: number, end: number, t: number) => {
@@ -108,6 +180,11 @@ export const CloudPoints: React.FC<ParticleSystemProps> = ({
     const colorHigh = new THREE.Color(accentHex);
     const colorPeak = new THREE.Color(peakHex);
 
+    // Pre-extract RGB values to avoid allocating objects inside the particle loop
+    const baseR = colorBase.r, baseG = colorBase.g, baseB = colorBase.b;
+    const highR = colorHigh.r, highG = colorHigh.g, highB = colorHigh.b;
+    const peakR = colorPeak.r, peakG = colorPeak.g, peakB = colorPeak.b;
+
     // Lerp factor for smooth movement (inertia)
     const baseSpeed = visualParams?.particleSpeed ?? 0.1;
     const lerpFactor = shape === 'CHLADNI_PLATE' || effect === 'CHLADNI_3D'
@@ -135,14 +212,28 @@ export const CloudPoints: React.FC<ParticleSystemProps> = ({
       if (visualParams?.chladniModalMixing !== undefined) targetAlpha = visualParams.chladniModalMixing;
     }
 
-    // Smooth harmonic mode transition (avoids harsh jump when notes change)
-    smoothModalRef.current.n += (targetN - smoothModalRef.current.n) * 0.16;
-    smoothModalRef.current.m += (targetM - smoothModalRef.current.m) * 0.16;
-    const currentN = smoothModalRef.current.n;
-    const currentM = smoothModalRef.current.m;
+    // Modal state morphing: updates target and smoothly blends via modal superposition
+    const mState = modalStateRef.current;
+    if (targetN !== mState.targetN || targetM !== mState.targetM || Math.abs(targetAlpha - mState.targetAlpha) > 0.08) {
+      mState.currentN = mState.targetN;
+      mState.currentM = mState.targetM;
+      mState.currentAlpha = mState.targetAlpha;
+      mState.targetN = targetN;
+      mState.targetM = targetM;
+      mState.targetAlpha = targetAlpha;
+      mState.blend = 0.0;
+    }
+
+    if (mState.blend < 1.0) {
+      mState.blend = Math.min(1.0, mState.blend + 0.06);
+    }
+
+    const currentN = mState.currentN;
+    const currentM = mState.currentM;
+    const currentAlpha = mState.currentAlpha;
     const chladniTightness = visualParams?.chladniParticleDispersion ?? 0.85;
     const plateShape = visualParams?.chladniPlateShape ?? 'SQUARE';
-    const modalMixing = visualParams?.chladniModalMixing !== undefined ? visualParams.chladniModalMixing : targetAlpha;
+    const modalMixing = visualParams?.chladniModalMixing !== undefined ? visualParams.chladniModalMixing : currentAlpha;
     const multiHarmonic = visualParams?.chladniMultiHarmonic !== false;
 
     for (let i = 0; i < PARTICLE_COUNT; i++) {

@@ -392,7 +392,7 @@ const CHROMATIC_BASE_MODES: Record<string, { n: number; m: number; alpha: number
   "B":  { n: 7, m: 5, alpha: 0.55 }  // Crystalline matrix
 };
 
-export function getChladniModesFromFrequency(frequency: number): {
+export function getChladniModesFromFrequency(frequency: number, centroid: number = 0): {
   n: number;
   m: number;
   noteName: string;
@@ -403,7 +403,7 @@ export function getChladniModesFromFrequency(frequency: number): {
   bassMode: { n: number; m: number };
   trebleMode: { n: number; m: number };
 } {
-  if (!isFinite(frequency) || frequency < 20 || frequency > 12000) {
+  if (!isFinite(frequency) || frequency < 30) {
     return { 
       n: 3, m: 4, noteName: "--", octave: 4, frequency: 0, confidence: 0, alpha: 0.25,
       bassMode: { n: 2, m: 1 }, trebleMode: { n: 6, m: 5 }
@@ -415,19 +415,52 @@ export function getChladniModesFromFrequency(frequency: number): {
   const octave = Math.floor(roundedNote / 12) - 1;
   const noteIndex = ((roundedNote % 12) + 12) % 12;
   const notePitch = NOTE_STRINGS[noteIndex] || "A";
-  const noteName = `${notePitch}${octave}`;
+  const noteName = `${notePitch}${Math.max(1, Math.min(8, octave))}`;
 
-  const base = CHROMATIC_BASE_MODES[notePitch] || { n: 3, m: 4, alpha: 0.25 };
-  const octaveOffset = Math.max(0, Math.min(4, octave - 2));
+  // Rich modal mapping by frequency bands following Ernst Chladni and Mary Waller experiments
+  let n = 3, m = 4, alpha = 0.25;
 
-  const n = Math.min(12, Math.max(1, base.n + octaveOffset));
-  const m = Math.min(12, Math.max(1, base.m + octaveOffset));
+  if (frequency < 80) {
+    n = 2; m = 1; alpha = 0.05; // Fundamental cruciform
+  } else if (frequency < 130) {
+    n = 2; m = 2; alpha = 0.12; // 4-leaf clover / concentric diamond
+  } else if (frequency < 200) {
+    n = 3; m = 1; alpha = 0.18; // Triple concentric rings
+  } else if (frequency < 300) {
+    n = 3; m = 2; alpha = 0.25; // Hourglass oval mandala
+  } else if (frequency < 420) {
+    n = 3; m = 3; alpha = 0.35; // 9-cell resonant grid
+  } else if (frequency < 580) {
+    n = 4; m = 2; alpha = 0.30; // Hexagram 6-fold rosette
+  } else if (frequency < 780) {
+    n = 4; m = 3; alpha = 0.42; // 8-petal Sacred Lotus
+  } else if (frequency < 1050) {
+    n = 5; m = 2; alpha = 0.22; // 10-point stellar star
+  } else if (frequency < 1400) {
+    n = 5; m = 3; alpha = 0.45; // Sacred Flower of Life
+  } else if (frequency < 1850) {
+    n = 5; m = 4; alpha = 0.32; // 12-lobed sacred mandala
+  } else if (frequency < 2400) {
+    n = 6; m = 3; alpha = 0.48; // Acoustic resonator labyrinth
+  } else if (frequency < 3200) {
+    n = 6; m = 4; alpha = 0.52; // Crystalline diamond matrix
+  } else if (frequency < 4200) {
+    n = 7; m = 3; alpha = 0.38; // Cymatic honeycomb
+  } else {
+    n = 7; m = 5; alpha = 0.55; // Transcendent cymatic web
+  }
 
-  // Multi-harmonic companions for simultaneous spectral resonance
-  const bassN = Math.max(1, Math.min(4, Math.floor(base.n * 0.6) || 1));
-  const bassM = Math.max(1, Math.min(4, Math.floor(base.m * 0.6) || 1));
-  const trebleN = Math.min(12, Math.max(5, base.n + 3));
-  const trebleM = Math.min(12, Math.max(4, base.m + 2));
+  // Modulate alpha dynamically with tonal brightness
+  if (centroid > 0) {
+    const centroidShift = ((centroid - 600) / 2000) * 0.15;
+    alpha = Math.min(0.85, Math.max(0.08, alpha + centroidShift));
+  }
+
+  // Multi-harmonic companions derived from audio spectrum
+  const bassN = Math.max(1, Math.min(4, Math.floor(n * 0.6) || 1));
+  const bassM = Math.max(1, Math.min(4, Math.floor(m * 0.6) || 1));
+  const trebleN = Math.min(10, Math.max(5, n + 2));
+  const trebleM = Math.min(10, Math.max(4, m + 2));
 
   return {
     n,
@@ -436,7 +469,7 @@ export function getChladniModesFromFrequency(frequency: number): {
     octave,
     frequency: Math.round(frequency),
     confidence: 1.0,
-    alpha: base.alpha,
+    alpha,
     bassMode: { n: bassN, m: bassM },
     trebleMode: { n: trebleN, m: trebleM }
   };
@@ -497,22 +530,31 @@ export const analyzeFrequencies = (
   let bassPeakVal = -1;
   let bassPeakIndex = -1;
 
-  // 2. Melodic band peak (180 Hz - 3200 Hz) with pink-noise tilt compensation
-  // This allows vocals, piano, guitars, synth leads, and solos to be tracked dynamically
+  // 2. Melodic band peak (180 Hz - 3500 Hz) with pink-noise tilt compensation
   const minMelodyBin = Math.max(1, Math.floor((180 / nyquist) * bufferLength));
-  const maxMelodyBin = Math.min(bufferLength - 1, Math.floor((3200 / nyquist) * bufferLength));
+  const maxMelodyBin = Math.min(bufferLength - 1, Math.floor((3500 / nyquist) * bufferLength));
   let melodyPeakWeighted = -1;
   let melodyPeakVal = -1;
   let melodyPeakIndex = -1;
 
-  // 3. Treble overtone peak (3200 Hz - 9000 Hz)
-  const minTrebleBin = Math.max(1, Math.floor((3200 / nyquist) * bufferLength));
+  // 3. Treble overtone peak (3500 Hz - 9000 Hz)
+  const minTrebleBin = Math.max(1, Math.floor((3500 / nyquist) * bufferLength));
   const maxTrebleBin = Math.min(bufferLength - 1, Math.floor((9000 / nyquist) * bufferLength));
   let treblePeakVal = -1;
   let treblePeakIndex = -1;
 
+  // 4. Spectral Centroid computation (tracks overall tonal center of the audio track)
+  let weightedFreqSum = 0;
+  let totalMagnitudeSum = 0;
+
   for (let i = 0; i < bufferLength; i++) {
     const value = frequencyArray[i];
+
+    if (value > 6) {
+      const binFreq = (i / bufferLength) * nyquist;
+      weightedFreqSum += binFreq * value;
+      totalMagnitudeSum += value;
+    }
 
     // Bass peak
     if (i >= minBassBin && i <= maxBassBin && value > bassPeakVal) {
@@ -522,7 +564,7 @@ export const analyzeFrequencies = (
 
     // Melodic pitch peak with high-frequency equal-loudness weighting
     if (i >= minMelodyBin && i <= maxMelodyBin) {
-      const weight = 1.0 + (i / maxMelodyBin) * 2.8;
+      const weight = 1.0 + (i / maxMelodyBin) * 2.5;
       const weightedVal = value * weight;
       if (weightedVal > melodyPeakWeighted) {
         melodyPeakWeighted = weightedVal;
@@ -551,17 +593,20 @@ export const analyzeFrequencies = (
   const treble = trebleSum / Math.max(1, (bufferLength - midRange));
   const average = (bass + mid + treble) / 3;
 
-  // Parabolic peak interpolation for sub-bin frequency accuracy in the melodic range
+  const spectralCentroid = totalMagnitudeSum > 0 ? (weightedFreqSum / totalMagnitudeSum) : 0;
+
+  // Primary dominant frequency extraction
   let dominantFrequency = 0;
-  if (melodyPeakIndex > minMelodyBin && melodyPeakIndex < maxMelodyBin && melodyPeakVal > 16) {
+  if (melodyPeakIndex > minMelodyBin && melodyPeakIndex < maxMelodyBin && melodyPeakVal > 14) {
     const alpha = frequencyArray[melodyPeakIndex - 1];
     const beta = frequencyArray[melodyPeakIndex];
     const gamma = frequencyArray[melodyPeakIndex + 1];
     const denom = alpha - 2 * beta + gamma;
     const delta = denom !== 0 ? 0.5 * (alpha - gamma) / denom : 0;
     dominantFrequency = ((melodyPeakIndex + delta) / bufferLength) * nyquist;
-  } else if (bassPeakIndex > minBassBin && bassPeakIndex < maxBassBin && bassPeakVal > 40) {
-    // Fall back to bass fundamental if no melody active
+  } else if (spectralCentroid > 50 && average > 8) {
+    dominantFrequency = spectralCentroid;
+  } else if (bassPeakIndex > minBassBin && bassPeakIndex < maxBassBin && bassPeakVal > 30) {
     dominantFrequency = (bassPeakIndex / bufferLength) * nyquist;
   }
 
@@ -571,7 +616,7 @@ export const analyzeFrequencies = (
   const dynTrebleN = Math.min(10, Math.max(5, 4 + Math.floor((treble / 255) * 6)));
   const dynTrebleM = Math.min(10, Math.max(4, 3 + Math.floor((treble / 255) * 6)));
 
-  // Note stabilization with responsive hysteresis (~100ms)
+  // Dynamic Chladni modes with responsive hysteresis (~90ms)
   let note = "--";
   let chladniModes = { 
     n: 3, m: 4, noteName: "--", octave: 4, frequency: 0, confidence: 0, alpha: 0.25,
@@ -579,8 +624,8 @@ export const analyzeFrequencies = (
     trebleMode: { n: dynTrebleN, m: dynTrebleM }
   };
 
-  if (dominantFrequency > 50 && (melodyPeakVal > 16 || bassPeakVal > 40)) {
-    const rawModes = getChladniModesFromFrequency(dominantFrequency);
+  if (dominantFrequency > 40 && average > 5) {
+    const rawModes = getChladniModesFromFrequency(dominantFrequency, spectralCentroid);
     chladniModes = {
       ...rawModes,
       bassMode: { n: dynBassN, m: dynBassM },
@@ -590,36 +635,17 @@ export const analyzeFrequencies = (
     lastStableFrequency = dominantFrequency;
     lastStableNote = note;
     lastStableModes = chladniModes;
-    stableCounter = 8; // Responsive hold ~120ms
+    stableCounter = 6; // Quick 90ms hold for rapid musical responsiveness
   } else if (stableCounter > 0) {
     stableCounter--;
     dominantFrequency = lastStableFrequency;
     note = lastStableNote;
     chladniModes = { 
       ...lastStableModes, 
-      confidence: Math.max(0.4, stableCounter / 8),
+      confidence: Math.max(0.4, stableCounter / 6),
       bassMode: { n: dynBassN, m: dynBassM },
       trebleMode: { n: dynTrebleN, m: dynTrebleM }
     };
-  } else if (average > 8) {
-    // Dynamic harmonic mode mapping based on spectral centroid when diffuse
-    const dynN = Math.min(8, Math.max(2, 2 + Math.floor((bass / 255) * 5)));
-    const dynM = Math.min(8, Math.max(1, 1 + Math.floor((mid / 255) * 6)));
-    const approxFreq = Math.round(100 + (mid / 255) * 500);
-    const approxNote = NOTE_STRINGS[Math.floor((mid + bass) / 40) % 12] + '3';
-    
-    chladniModes = {
-      n: dynN,
-      m: dynM,
-      noteName: approxNote,
-      octave: 3,
-      frequency: approxFreq,
-      confidence: Math.min(1.0, average / 40),
-      alpha: 0.25 + ((mid - bass) / 255) * 0.25,
-      bassMode: { n: dynBassN, m: dynBassM },
-      trebleMode: { n: dynTrebleN, m: dynTrebleM }
-    };
-    note = approxNote;
   }
 
   let mood = "Neutral";
